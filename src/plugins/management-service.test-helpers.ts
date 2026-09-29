@@ -31,6 +31,7 @@ export function metadataSnapshot(params: {
   activityIconPath?: string;
   toolActivityIconPaths?: Record<string, string>;
   categories?: PluginCategorySlug[];
+  contracts?: PluginManifestRecord["contracts"];
   packageVersion?: string;
   configSchema?: PluginManifestRecord["configSchema"];
   channels?: string[];
@@ -46,6 +47,7 @@ export function metadataSnapshot(params: {
     description: "Coordinate agent work in a shared board.",
     catalog: { featured: true, order: 10 },
     ...(params.categories ? { categories: params.categories } : {}),
+    ...(params.contracts ? { contracts: params.contracts } : {}),
     ...(params.packageDependencies ? { packageDependencies: params.packageDependencies } : {}),
     ...(params.iconPath ? { iconPath: params.iconPath } : {}),
     ...(params.themeIconPaths ? { themeIconPaths: params.themeIconPaths } : {}),

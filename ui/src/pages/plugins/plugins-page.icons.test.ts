@@ -166,10 +166,8 @@ describe("PluginsPage icon routing", () => {
         status === 200
           ? expect(image()?.getAttribute("src")).toBe("blob:package")
           : expect(
-              page
-                .querySelector(".plugin-catalog-detail__hero .plugins-tile--fallback")
-                ?.textContent?.trim(),
-            ).toBe("WO"),
+              page.querySelector(".plugin-catalog-detail__hero .plugins-tile.skeleton"),
+            ).not.toBeNull(),
       );
       catalog.resolve(detail);
       await waitForFast(() =>
@@ -318,7 +316,19 @@ describe("PluginsPage icon routing", () => {
       if (method === "plugins.catalog.browse") {
         return (params as { intent?: string }).intent === "featured"
           ? { items: [] }
-          : { items: discoveryEntries };
+          : {
+              items: discoveryEntries,
+              categories: [
+                { slug: "web", label: "Web", description: "Web tools", icon: "globe", order: 1 },
+                {
+                  slug: "channels",
+                  label: "Channels",
+                  description: "Messaging",
+                  icon: "messageSquare",
+                  order: 2,
+                },
+              ],
+            };
       }
       return requestResult(method);
     });
@@ -550,11 +560,13 @@ describe("PluginsPage icon routing", () => {
       createPluginsRouteData(harness.gateway, result),
     );
 
-    await waitForFast(() => expect(fetchMock).toHaveBeenCalledOnce());
+    await waitForFast(() =>
+      expect(
+        page.querySelector('[data-plugin-id="unsafe-icon"] .plugins-tile--fallback')?.textContent,
+      ).toContain("UI"),
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
     expect(createObjectURL).not.toHaveBeenCalled();
-    expect(
-      page.querySelector('[data-plugin-id="unsafe-icon"] .plugins-tile--fallback')?.textContent,
-    ).toContain("UI");
   });
 });
 
