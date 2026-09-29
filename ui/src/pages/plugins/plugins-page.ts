@@ -376,9 +376,9 @@ class PluginsPage extends OpenClawLightDomElement {
     }
     // Route changes reuse artwork; a new Gateway plugin generation retires it.
     if (this.result?.generation === result?.generation) {
-      this.icons.reconcileInstalled(result);
+      this.icons.installed.reconcile(result);
     } else {
-      this.icons.resetInstalled();
+      this.icons.installed.reset();
     }
     this.messages = this.consentController.reconcileInstallMessages(result);
     this.result = result;
@@ -515,7 +515,7 @@ class PluginsPage extends OpenClawLightDomElement {
   }
 
   private applyMutationResult(result: PluginMutationResult) {
-    this.icons.invalidateInstalled(result.plugin.id);
+    this.icons.installed.invalidate(result.plugin.id);
     this.replaceResult(mergePluginCatalogItem(this.result, result.plugin));
   }
 
@@ -646,8 +646,8 @@ class PluginsPage extends OpenClawLightDomElement {
       pageNotice: this.pageNotice,
       iconUrls: this.iconUrls,
       catalogIconUrls: this.catalogIconUrls,
-      iconLoading: this.icons.isInstalledLoading,
-      catalogIconLoading: this.icons.isCatalogLoading,
+      iconLoading: this.icons.installed.isLoading,
+      catalogIconLoading: this.icons.catalog.isLoading,
       catalogDetail: this.catalogDetail,
       installedDetailTab: this.installedDetailTab,
       canMutate: this.canMutate(),
@@ -680,7 +680,7 @@ class PluginsPage extends OpenClawLightDomElement {
             search: fromDiscovery && pluginId ? "?from=plugins" : "",
           });
         },
-        handlePluginIconError: (pluginId) => this.icons.handleInstalledError(pluginId),
+        handlePluginIconError: (pluginId) => this.icons.installed.handleError(pluginId),
         updateEnabled: (pluginId, enabled, rowKey) =>
           void this.consentController.mutateInstalledPlugin(
             pluginId,

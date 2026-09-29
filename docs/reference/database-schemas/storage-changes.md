@@ -108,8 +108,13 @@ fail-closed settlement.
 
 Request config custody follows committed policy publications. Equivalent snapshots
 and settings unrelated to approval auth or session routing preserve the request.
-Changes to those retained policy facts permanently revoke it, including a change
-restored before the next worker check. Handler completion releases its publication
+Until the request binds its approval's source session, the retained facts include
+the whole agent roster and session store inventory. Once bound, it retains the
+routing facts plus the stores that source resolves through, so adding, removing, or
+re-storing an unrelated agent preserves it. Shared fixed stores keep their co-tenants,
+and a retired source owner keeps the inventory its store discovery scans. Changes to
+retained facts permanently revoke the request, including a change restored before
+the next worker check. Handler completion releases its publication
 listener; worker commit checks consume the retained revocation fact without loading
 config, profiles, or session rows. Native-compatible requests retain the same
 publication fence in addition to their synchronous SDK guard.
@@ -356,6 +361,23 @@ physical owners retain conservative close custody until their readers retire.
 Closing an agent, path, or matching root revokes pending discovery. Missing reads
 do not create databases, and current evidence takes precedence over unknown and
 absent evidence. Incognito evidence keeps its process-held native owner.
+
+Subagent recovery checks session identity and execution ownership through that
+read worker. Each check acquires finite reader custody against its captured
+physical source and returns only the fields used by recovery policy. The native
+handle retains one last-key projection under the existing connection revision;
+foreign commits, local writes, rollback, and file replacement invalidate reuse.
+Incognito checks use the process-held owner's transaction facts.
+Missing stores remain missing: interrupted-run bookkeeping and requester settlement
+continue with child effects suppressed, and a newly appearing store invalidates
+the captured absence.
+
+Session signals, transcript failure reports, and Browser cleanup claims carry
+those restrictions through their existing native write admission. The worker
+checks the source revision again after the host grant; caller authority remains
+live through admission. Accepted writes and claimed cleanup retain their original
+settlement owners. The change adds no persistent projection, schema, retention
+rule, or update migration.
 
 A retained, already-admitted native reader can continue its committed canonical
 admission for one worker request. The canonical owner binds that continuation to
@@ -1071,6 +1093,16 @@ Lease verification releases each read snapshot before waiting for host admission
 then rereads the exact unexpired owner from current committed state. Host scheduling
 does not pin the WAL; writes and renewals retain their transaction-held checks.
 Schemas, retention, durability, and update behavior are unchanged.
+
+Doctor imports retired MCP OAuth JSON through the same shared-state worker.
+The host retains exclusive maintenance ownership, the retired runtime's file lock,
+and the original source claim while the worker reads receipts, atomically imports
+credentials with their receipt, and records source removal. Existing SQLite
+credentials and explicit logout retain precedence. A definite pre-commit failure
+restores the source; an uncertain import keeps the Doctor claim for receipt
+verification on the next run, without replaying the write. A confirmed commit
+retains its result even when delivery fails, and reports that failure. Published
+updaters still invoke the same Doctor repair path; no schema or stored format changes.
 
 Requester MCP setup reads its sorted authorization set in one current read-worker
 operation. The worker decodes selected rows in caller order and returns only
