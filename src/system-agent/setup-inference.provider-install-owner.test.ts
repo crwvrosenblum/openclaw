@@ -16,6 +16,7 @@ import * as loader from "../plugins/loader.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import type { ProviderInstallCatalogEntry } from "../plugins/provider-install-catalog.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
@@ -34,15 +35,40 @@ vi.mock("../plugins/provider-auth-choice.js", () => ({
   prepareAuthChoiceLoadedPluginProvider: prepareProvider,
 }));
 
+const catalogEntry = vi.hoisted(() => vi.fn<() => ProviderInstallCatalogEntry | undefined>());
+vi.mock("../plugins/provider-install-catalog.js", () => ({
+  resolveProviderInstallCatalogEntry: catalogEntry,
+}));
+const manualEntry: ProviderInstallCatalogEntry = {
+  pluginId: "fixture-provider",
+  providerId: "fixture-provider",
+  methodId: "key",
+  choiceId: "fixture-provider-key",
+  choiceLabel: "Fixture",
+  label: "Fixture",
+  origin: "bundled",
+  appGuidedSecret: true,
+  optionKey: "fixtureApiKey",
+  install: { npmSpec: "@fixture/provider@1.0.0", defaultChoice: "npm" },
+};
+
 afterEach(() => {
+  catalogEntry.mockReset();
   vi.restoreAllMocks();
   prepareProvider.mockReset();
   resetPluginLoaderTestStateForTest();
 });
 
-it.each([false, true])(
-  "binds a newly installed provider to its real artifact (replace during probe: %s)",
-  async (replaceDuringProbe) => {
+it.each([
+  { replaceDuringProbe: false, manual: false },
+  { replaceDuringProbe: true, manual: false },
+  { replaceDuringProbe: false, manual: true },
+])(
+  "binds a newly installed provider to its real artifact (replace: $replaceDuringProbe, pasted key: $manual)",
+  async ({ replaceDuringProbe, manual }) => {
+    if (manual) {
+      catalogEntry.mockReturnValue(manualEntry);
+    }
     await withOpenClawTestState(
       {
         label: "provider-install-owner",
@@ -92,6 +118,15 @@ it.each([false, true])(
         }
         let trustedRecord: PluginInstallRecord | undefined;
         prepareProvider.mockImplementation(async (params, consume) => {
+          if (manual) {
+            expect(params.opts).toEqual({
+              token: "synthetic-owner-key",
+              tokenProvider: "fixture-provider",
+              fixtureApiKey: "synthetic-owner-key",
+              secretInputMode: "plaintext",
+            });
+            expect(params.prompter).toBeDefined();
+          }
           // Acquisition and auth are synthetic. Discovery, runtime registration,
           // owner fingerprints, activation checks, and final promotion are real.
           await fs.mkdir(pluginRoot, { recursive: true });
@@ -198,7 +233,8 @@ it.each([false, true])(
           },
           async () => {
             const result = await activateSetupInference({
-              kind: "provider-auth",
+              kind: manual ? "api-key" : "provider-auth",
+              ...(manual ? { apiKey: "synthetic-owner-key" } : {}),
               authChoice: "fixture-provider-key",
               agentId: "main",
               workspace: state.workspaceDir,
@@ -208,14 +244,17 @@ it.each([false, true])(
               onPreparationComplete,
               prompter: createWizardPrompter(),
               deps: {
-                resolveManifestProviderAuthChoice: () => ({
-                  pluginId: "fixture-provider",
-                  providerId: "fixture-provider",
-                  methodId: "key",
-                  choiceId: "fixture-provider-key",
-                  choiceLabel: "Fixture",
-                  appGuidedSecret: true,
-                }),
+                resolveManifestProviderAuthChoice: () =>
+                  manual
+                    ? undefined
+                    : {
+                        pluginId: "fixture-provider",
+                        providerId: "fixture-provider",
+                        methodId: "key",
+                        choiceId: "fixture-provider-key",
+                        choiceLabel: "Fixture",
+                        appGuidedSecret: true,
+                      },
                 captureSystemAgentOwnerPluginArtifacts: capture,
                 resolveApiKeyForProvider: async () => resolvedAuth,
                 runEmbeddedAgent,
@@ -271,3 +310,39 @@ it.each([false, true])(
     );
   },
 );
+
+it.each([
+  { name: "no interactive session", prompt: false, optedIn: true, key: "synthetic-owner-key" },
+  { name: "no pasted-key opt-in", prompt: true, optedIn: false, key: "synthetic-owner-key" },
+  { name: "empty key", prompt: true, optedIn: true, key: " " },
+  {
+    name: "declined installation",
+    prompt: true,
+    optedIn: true,
+    key: "synthetic-owner-key",
+    decline: true,
+  },
+])("does not activate a catalog key with $name", async (testCase) => {
+  catalogEntry.mockReturnValue({ ...manualEntry, appGuidedSecret: testCase.optedIn });
+  prepareProvider.mockImplementation(async (_params, consume) => await consume(null));
+  await withOpenClawTestState({ label: "manual-install-rejected" }, async (state) => {
+    await state.writeConfig({ gateway: { mode: "local" }, plugins: { slots: { memory: "none" } } });
+    const before = await fs.readFile(state.configPath, "utf8");
+    const runEmbeddedAgent = vi.fn();
+    const result = await activateSetupInference({
+      kind: "api-key",
+      authChoice: manualEntry.choiceId,
+      apiKey: testCase.key,
+      surface: "gateway",
+      workspace: state.workspaceDir,
+      recordSetupAudit: false,
+      runtime: createNonExitingRuntime(),
+      ...(testCase.prompt ? { prompter: createWizardPrompter() } : {}),
+      deps: { resolveManifestProviderAuthChoice: () => undefined, runEmbeddedAgent },
+    });
+    expect(result.ok).toBe(false);
+    expect(prepareProvider).toHaveBeenCalledTimes(testCase.decline ? 1 : 0);
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    expect(await fs.readFile(state.configPath, "utf8")).toBe(before);
+  });
+});

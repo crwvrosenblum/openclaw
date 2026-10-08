@@ -561,6 +561,7 @@
                 "method": "api-key",
                 "choiceId": "coreweave-api-key",
                 "choiceLabel": "CoreWeave Inference API key",
+                "appGuidedSecret": true,
                 "choiceHint": "Uses your W&B API key",
                 "groupId": "coreweave",
                 "groupLabel": "CoreWeave Inference",
