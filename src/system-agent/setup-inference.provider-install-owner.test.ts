@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
+import { resolveAgentDir } from "../agents/agent-scope.js";
+import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
 import { fingerprintResolvedProviderAuth } from "../agents/execution-auth-binding.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -31,7 +33,8 @@ const prepareProvider = vi.hoisted(() =>
     typeof import("../plugins/provider-auth-choice.js").prepareAuthChoiceLoadedPluginProvider
   >(),
 );
-vi.mock("../plugins/provider-auth-choice.js", () => ({
+vi.mock("../plugins/provider-auth-choice.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-auth-choice.js")>()),
   prepareAuthChoiceLoadedPluginProvider: prepareProvider,
 }));
 
@@ -190,7 +193,16 @@ it.each([
             {
               config,
               agentModelOverride: "fixture-provider/fixture-model",
-              authProfiles: [],
+              authProfiles: [
+                {
+                  profileId: "fixture-provider:default",
+                  credential: {
+                    type: "api_key",
+                    provider: "fixture-provider",
+                    key: "synthetic-owner-key",
+                  },
+                },
+              ],
               pendingPluginInstalls: { "fixture-provider": trustedRecord },
               persistAuthProfiles: async () => {},
             },
@@ -202,6 +214,7 @@ it.each([
           async (params) => {
             expect(onPreparationComplete).toHaveBeenCalledOnce();
             params.onSuccessfulAuthBinding?.({
+              authProfileId: params.authProfileId,
               authFingerprint,
               agentHarnessId: "openclaw",
               modelId: "fixture-model",
@@ -257,7 +270,10 @@ it.each([
                         appGuidedSecret: true,
                       },
                 captureSystemAgentOwnerPluginArtifacts: capture,
-                resolveApiKeyForProvider: async () => resolvedAuth,
+                resolveApiKeyForProvider: async (params) => ({
+                  ...resolvedAuth,
+                  profileId: params.profileId,
+                }),
                 runEmbeddedAgent,
               },
             });
@@ -299,6 +315,16 @@ it.each([
                 throw new Error("Installer did not prepare a trusted record");
               }
               expect(records?.["fixture-provider"]).toMatchObject(trustedRecord);
+              const committed = await readConfigFileSnapshot();
+              expect(committed.sourceConfig.plugins?.installs).toBeUndefined();
+              const profiles = loadAuthProfileStoreWithoutExternalProfiles(
+                resolveAgentDir(committed.config, "main"),
+              ).profiles;
+              const credential = Object.values(profiles).find(
+                (profile) => profile.provider === "fixture-provider",
+              );
+              expect(credential).toMatchObject({ type: "api_key", key: "synthetic-owner-key" });
+              expect(credential?.setup).toBeUndefined();
             }
             expect(getActivePluginRegistry()).toBe(runningRegistry);
             expect(getCurrentPluginMetadataSnapshot({ config: original.runtimeConfig })).toBe(
