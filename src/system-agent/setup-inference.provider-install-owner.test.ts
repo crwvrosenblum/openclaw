@@ -36,7 +36,8 @@ vi.mock("../plugins/provider-auth-choice.js", () => ({
 }));
 
 const catalogEntry = vi.hoisted(() => vi.fn<() => ProviderInstallCatalogEntry | undefined>());
-vi.mock("../plugins/provider-install-catalog.js", () => ({
+vi.mock("../plugins/provider-install-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-install-catalog.js")>()),
   resolveProviderInstallCatalogEntry: catalogEntry,
 }));
 const manualEntry: ProviderInstallCatalogEntry = {

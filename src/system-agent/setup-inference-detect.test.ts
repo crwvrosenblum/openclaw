@@ -41,7 +41,8 @@ vi.mock("./setup-native-session-catalogs.js", () => ({
   listSetupNativeSessionCatalogs: () => [],
   requiresSetupNativeSessionCatalogConsent: () => false,
 }));
-vi.mock("../plugins/provider-install-catalog.js", () => ({
+vi.mock("../plugins/provider-install-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-install-catalog.js")>()),
   resolveProviderInstallCatalogEntries: fixture.installEntries,
 }));
 vi.mock("../plugins/enable.js", () => ({

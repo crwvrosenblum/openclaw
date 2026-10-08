@@ -9960,7 +9960,6 @@
 ["src/system-agent/setup-apply.test-harness.ts","./setup-inference.js","78211e43b2d055a299fb4913d82d71859cbf7a9ebe27ed1a9e0d80e2d515eeec",1]
 ["src/system-agent/setup-inference-detect.test.ts","../plugins/enable.js","285b3d258fa01bde366113865045b8f121ff4b01aac45803b86e77f3da0c031f",1]
 ["src/system-agent/setup-inference-detect.test.ts","../plugins/plugin-lifecycle-lease.js","37bf4c592c59f512a8a2d14d1c56930e658de6eb0da6acb036e47334214c5552",1]
-["src/system-agent/setup-inference-detect.test.ts","../plugins/provider-install-catalog.js","344d7ec4568d79582ac5d09299b56caf9d4ad522f0698983fac9cf3b0ce4fdd2",1]
 ["src/system-agent/setup-inference-detect.test.ts","./setup-native-session-catalogs.js","466f53e2e23b855cbd68257a8e8da76c73229d007714089fcd926e72748c8cc2",1]
 ["src/system-agent/setup-inference-detect.test.ts","./setup-provider-method.js","ef0db5af07d2642d03df9e3f1b8d2cfdd4022094548cd89f13f3cd9f83430f72",1]
 ["src/system-agent/setup-inference-error-reporting.test.ts","../agents/runtime-plugins.js","83f617a06e396a96ddcb6f7b909a475f121f42ad98e957f965dd3cbc31701a82",1]
