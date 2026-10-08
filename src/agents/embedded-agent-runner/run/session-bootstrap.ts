@@ -1,6 +1,7 @@
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
+import { getReplyOperationSessionReader } from "../../../auto-reply/reply/reply-run-registry.state.js";
 import { assertRequiredWorkerSelection } from "../../../config/required-worker-profile.js";
 import {
   resolveSessionStorePathCore,
@@ -14,6 +15,7 @@ import {
   type SessionTranscriptRuntimeTarget,
 } from "../../../config/sessions/session-accessor.js";
 import { applySessionEntryOperation } from "../../../config/sessions/session-accessor.sqlite-entry.js";
+import { assertSessionEntryCohortScope } from "../../../config/sessions/session-entry-read-ordered.js";
 import { readSessionEntryInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
 import { resolvePersistedSessionStoreOwnerForTarget } from "../../../config/sessions/session-store-owner.js";
 import { prepareSessionEntryPresenceRead } from "../../../config/sessions/session-transcript-worker-runtime.js";
@@ -130,11 +132,9 @@ export function buildContextEngineCompactionSessionTarget(params: {
       )
     : undefined;
   const markerSessionKey = marker
-    ? suppliedEntry?.sessionId === marker.sessionId
+    ? suppliedEntry?.sessionId === marker.sessionId || (candidateSessionKey && !suppliedEntry)
       ? candidateSessionKey
-      : candidateSessionKey && !suppliedEntry
-        ? candidateSessionKey
-        : preferredMarkerSessionKey
+      : preferredMarkerSessionKey
     : undefined;
   if (marker && markerMatches.length > 0 && !markerSessionKey) {
     throw new Error("Legacy compaction transcript identity is ambiguous");
@@ -222,12 +222,9 @@ export async function resetNoRealConversationTokenSnapshot(params: {
 }
 
 /** Best-effort identity lookup retains the agent that owns an unqualified stored key. */
-function backfillSessionIdentity(params: {
-  config: RunEmbeddedAgentParams["config"];
-  sessionId: string;
-  sessionKey?: string;
-  agentId?: string;
-}): Pick<RunEmbeddedAgentInternalParams, "agentId" | "sessionKey"> {
+function backfillSessionIdentity(
+  params: Pick<RunEmbeddedAgentParams, "config" | "sessionId" | "sessionKey" | "agentId">,
+): Pick<RunEmbeddedAgentInternalParams, "agentId" | "sessionKey"> {
   const trimmed = normalizeOptionalString(params.sessionKey);
   if (trimmed) {
     return { sessionKey: trimmed };
@@ -268,12 +265,7 @@ export async function prepareEmbeddedRunSession(paramsInput: RunEmbeddedAgentInt
   // Carry the lookup's owner into every admission; a bare stored key cannot encode it.
   const paramsBase = {
     ...supplied,
-    ...backfillSessionIdentity({
-      config: supplied.config,
-      sessionId: supplied.sessionId,
-      sessionKey: supplied.sessionKey,
-      agentId: supplied.agentId,
-    }),
+    ...backfillSessionIdentity(supplied),
   };
   const sessionAdmission = await assertAgentHarnessRunAdmission(paramsBase);
   assertRequiredWorkerSelection(paramsBase.config ?? {}, {
@@ -435,34 +427,38 @@ export async function assertAgentHarnessRunAdmission(
     ? resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)
     : undefined;
   assertActive?.();
-  const durableEntry = await readSessionEntryInWorker(
-    {
-      ...(admissionAgentId ? { agentId: admissionAgentId } : {}),
-      readConsistency: "latest",
-      sessionKey,
-      storePath,
-    },
-    () => params.abortSignal?.throwIfAborted(),
-  );
-  assertActive?.();
-  const admissionError = resolveAgentHarnessRunAdmissionError({
-    agentHarnessId: params.agentHarnessId,
-    entry: durableEntry,
-    modelSelectionLocked: params.modelSelectionLocked,
-    sessionId: params.sessionId,
+  const scope = {
+    agentId: admissionAgentId,
     sessionKey,
-  });
-  if (admissionError) {
-    throw new Error(admissionError);
+    storePath,
+    readConsistency: "latest" as const,
+  };
+  const assertCurrent = () => {
+    assertActive?.();
+    params.abortSignal?.throwIfAborted();
+  };
+  const consume = (entry: InternalSessionEntry | undefined) => {
+    assertCurrent();
+    const admissionError = resolveAgentHarnessRunAdmissionError({
+      agentHarnessId: params.agentHarnessId,
+      entry,
+      modelSelectionLocked: params.modelSelectionLocked,
+      sessionId: params.sessionId,
+      sessionKey,
+    });
+    if (admissionError) {
+      throw new Error(admissionError);
+    }
+    return entry ? { ...scope, entry } : undefined;
+  };
+  const reader = getReplyOperationSessionReader(params.replyOperation);
+  if (reader) {
+    const key = assertSessionEntryCohortScope(reader, scope);
+    return reader.withRead({ sessionKeys: [key] }, assertCurrent, (read) =>
+      consume(read.entries.find((row) => row.sessionKey === key)?.entry),
+    );
   }
-  return durableEntry
-    ? {
-        ...(admissionAgentId ? { agentId: admissionAgentId } : {}),
-        entry: durableEntry as InternalSessionEntry,
-        sessionKey,
-        storePath,
-      }
-    : undefined;
+  return consume(await readSessionEntryInWorker(scope, assertCurrent));
 }
 
 export async function claimAgentSessionWriter(params: RunEmbeddedAgentParams): Promise<
