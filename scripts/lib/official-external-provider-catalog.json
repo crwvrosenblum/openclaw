@@ -578,9 +578,9 @@
           }
         ],
         "install": {
-          "clawhubSpec": "clawhub:@coreweave/serverless-inference@0.1.0",
+          "clawhubSpec": "clawhub:@coreweave/serverless-inference@0.1.1",
           "defaultChoice": "clawhub",
-          "expectedIntegrity": "sha256:a75c0baa95d6a4b3ee43230c599a324f51403868c403098c93f91248d8d76f9b",
+          "expectedIntegrity": "sha256:00f069c04f3fd6c0d77565e185a8a7b03cb4a2c7f126867fe5ebb306e9e4c41c",
           "minHostVersion": ">=2026.9.6"
         }
       }

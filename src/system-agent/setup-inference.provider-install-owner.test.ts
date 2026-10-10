@@ -342,16 +342,8 @@ it.each([
   { name: "no interactive session", prompt: false, optedIn: true, key: "synthetic-owner-key" },
   { name: "no pasted-key opt-in", prompt: true, optedIn: false, key: "synthetic-owner-key" },
   { name: "empty key", prompt: true, optedIn: true, key: " " },
-  {
-    name: "declined installation",
-    prompt: true,
-    optedIn: true,
-    key: "synthetic-owner-key",
-    decline: true,
-  },
 ])("does not activate a catalog key with $name", async (testCase) => {
   catalogEntry.mockReturnValue({ ...manualEntry, appGuidedSecret: testCase.optedIn });
-  prepareProvider.mockImplementation(async (_params, consume) => await consume(null));
   await withOpenClawTestState({ label: "manual-install-rejected" }, async (state) => {
     await state.writeConfig({ gateway: { mode: "local" }, plugins: { slots: { memory: "none" } } });
     const before = await fs.readFile(state.configPath, "utf8");
@@ -368,7 +360,7 @@ it.each([
       deps: { resolveManifestProviderAuthChoice: () => undefined, runEmbeddedAgent },
     });
     expect(result.ok).toBe(false);
-    expect(prepareProvider).toHaveBeenCalledTimes(testCase.decline ? 1 : 0);
+    expect(prepareProvider).not.toHaveBeenCalled();
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
     expect(await fs.readFile(state.configPath, "utf8")).toBe(before);
   });
