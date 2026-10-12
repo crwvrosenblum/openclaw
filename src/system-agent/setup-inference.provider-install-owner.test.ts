@@ -13,7 +13,7 @@ import { resolvePluginArtifactDeclaredSurface } from "../plugins/capability-arti
 import { computeDeclaredSurfaceHash } from "../plugins/capability-summary.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolvePluginNpmProjectDir } from "../plugins/install-paths.js";
-import { readPersistedInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
+import { readPersistedInstalledPluginIndexInstallRecordsAsync } from "../plugins/installed-plugin-index-records.js";
 import * as loader from "../plugins/loader.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
@@ -308,8 +308,12 @@ it.each([
                 modelRef: "fixture-provider/fixture-model",
               });
               // The running generation intentionally retains its pre-install cache.
-              const records = await withPluginLifecycleLease({}, async () =>
-                readPersistedInstalledPluginIndexInstallRecords({ stateDir: state.stateDir }),
+              const records = await withPluginLifecycleLease(
+                {},
+                async () =>
+                  await readPersistedInstalledPluginIndexInstallRecordsAsync({
+                    stateDir: state.stateDir,
+                  }),
               );
               if (!trustedRecord) {
                 throw new Error("Installer did not prepare a trusted record");

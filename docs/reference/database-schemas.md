@@ -11,6 +11,11 @@ title: "Database schemas"
 
 OpenClaw stores control-plane state in the shared state database and agent data in one SQLite database per agent. Schema migrations run forward when a database opens. Older OpenClaw builds refuse databases written by a newer schema.
 
+PostgreSQL shared-state generation requires PostgreSQL 16+, preserves lazy feature
+fragments, and keeps engine schema versions in lockstep. See
+[shared-state schema generation](/reference/database-schemas/storage-changes#shared-state-postgresql-schema-generation)
+for catalog equivalence and the explicit v22 pending-promotion exceptions.
+
 The Gateway process is the single owner of every OpenClaw database and its state.
 Its workers and native handles share that ownership. Committed write receipts
 invalidate in-process row caches before their next use; a cache without complete
@@ -152,6 +157,13 @@ transaction, which publishes the new schema facts on commit; rollback cannot
 publish a schema that did not commit. Ordinary connection replacement and data
 commits do not repeat schema validation. Schemas, stored bytes, and update behavior
 are unchanged.
+
+Shared-state bootstrap checks native table options once after installing the
+canonical schema. When every ordinary table is already STRICT, it skips legacy
+STRICT rebuild planning and duplicate schema installation. Existing non-STRICT
+tables still use the transactional migration, and final canonical table and index
+validation remains mandatory. Doctor's explicit repair and version refusal are
+unchanged; this changes no stored format or upgrade/downgrade contract.
 
 Admitted schema facts survive data-only transaction settlement. Committed write
 receipts invalidate cached row facts. A settled write releases its receipt fence
