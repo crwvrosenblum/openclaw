@@ -145,7 +145,7 @@ async function prepareSetupInferenceOptions(agentId?: string) {
   const manualInstallChoices = installEntries.filter(
     (entry) =>
       !allAuthChoices.some((choice) => choice.choiceId === entry.choiceId) &&
-      (deps.enablePluginInConfig ?? enablePluginInConfig)(cfg, entry.pluginId).enabled,
+      enablePluginInConfig(cfg, entry.pluginId).enabled,
   );
   const authOptions = [
     ...listSetupInferenceAuthOptions(authChoices),

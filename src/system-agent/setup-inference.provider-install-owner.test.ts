@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
+import { resolveAgentDir } from "../agents/agent-scope.js";
+import { loadAuthProfileStoreWithoutExternalProfilesAsync } from "../agents/auth-profiles/store-runtime.js";
 import * as embeddedAgent from "../agents/embedded-agent.js";
 import { fingerprintResolvedProviderAuth } from "../agents/execution-auth-binding.js";
 import * as modelAuth from "../agents/model-auth.js";
@@ -18,6 +20,7 @@ import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtur
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import * as providerChoices from "../plugins/provider-auth-choices.js";
+import type { ProviderInstallCatalogEntry } from "../plugins/provider-install-catalog.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
@@ -36,7 +39,8 @@ const prepareProvider = vi.hoisted(() =>
 const providerId = "fixture-provider";
 const modelRef = `${providerId}/fixture-model`;
 const writeJson = (file: string, value: unknown) => fs.writeFile(file, JSON.stringify(value));
-vi.mock("../plugins/provider-auth-choice.js", () => ({
+vi.mock("../plugins/provider-auth-choice.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-auth-choice.js")>()),
   prepareAuthChoiceLoadedPluginProvider: prepareProvider,
 }));
 
@@ -65,12 +69,19 @@ afterEach(() => {
   resetPluginLoaderTestStateForTest();
 });
 
-it.each([false, true])(
-  "binds a newly installed provider to its real artifact (replace during probe: %s)",
-  (replaceDuringProbe) =>
+it.each([
+  { replaceDuringProbe: false, manual: false },
+  { replaceDuringProbe: true, manual: false },
+  { replaceDuringProbe: false, manual: true },
+])(
+  "binds a newly installed provider to its real artifact (replace: $replaceDuringProbe, pasted key: $manual)",
+  ({ replaceDuringProbe, manual }) =>
     withOpenClawTestState(
       { label: "provider-install-owner", env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" } },
       async (state) => {
+        if (manual) {
+          catalogEntry.mockReturnValue(manualEntry);
+        }
         await state.writeConfig({
           gateway: { mode: "local" },
           agents: {
@@ -207,14 +218,18 @@ it.each([false, true])(
           },
           async () => {
             vi.spyOn(modelAuth, "resolveApiKeyForProviderCore").mockResolvedValue(resolvedAuth);
-            vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue({
-              pluginId: providerId,
-              providerId,
-              methodId: "key",
-              choiceId: "fixture-provider-key",
-              choiceLabel: "Fixture",
-              appGuidedSecret: true,
-            });
+            vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue(
+              manual
+                ? undefined
+                : {
+                    pluginId: providerId,
+                    providerId,
+                    methodId: "key",
+                    choiceId: "fixture-provider-key",
+                    choiceLabel: "Fixture",
+                    appGuidedSecret: true,
+                  },
+            );
             const result = await activateSetupInference({
               kind: manual ? "api-key" : "provider-auth",
               ...(manual ? { apiKey: "synthetic-owner-key" } : {}),
@@ -280,7 +295,9 @@ it("stops a pasted-key install when capability consent is denied", async () => {
         { id: "fixture-provider", label: "Fixture", auth: [] },
       ),
     );
-    const runEmbeddedAgent = vi.fn();
+    const runEmbeddedAgent = vi.fn<typeof embeddedAgent.runEmbeddedAgent>();
+    vi.spyOn(embeddedAgent, "runEmbeddedAgent").mockImplementation(runEmbeddedAgent);
+    vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue(undefined);
     const result = await activateSetupInference({
       kind: "api-key",
       authChoice: manualEntry.choiceId,
@@ -290,7 +307,6 @@ it("stops a pasted-key install when capability consent is denied", async () => {
       recordSetupAudit: false,
       runtime: createNonExitingRuntime(),
       prompter: createWizardPrompter(),
-      deps: { resolveManifestProviderAuthChoice: () => undefined, runEmbeddedAgent },
     });
     expect(result).toMatchObject({
       ok: false,
@@ -304,14 +320,16 @@ it("stops a pasted-key install when capability consent is denied", async () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
     expect(await fs.readFile(state.configPath, "utf8")).toBe(before);
     const committed = await readConfigFileSnapshot();
-    const profiles = loadAuthProfileStoreWithoutExternalProfiles(
-      resolveAgentDir(committed.config, "main"),
+    const profiles = (
+      await loadAuthProfileStoreWithoutExternalProfilesAsync(
+        resolveAgentDir(committed.config, "main"),
+      )
     ).profiles;
     expect(Object.values(profiles).some((profile) => profile.provider === "fixture-provider")).toBe(
       false,
     );
     const records = await withPluginLifecycleLease({}, async () =>
-      readPersistedInstalledPluginIndexInstallRecords({ stateDir: state.stateDir }),
+      readPersistedInstalledPluginIndexInstallRecordsAsync({ stateDir: state.stateDir }),
     );
     expect(records?.["fixture-provider"]).toBeUndefined();
   });
@@ -444,34 +462,34 @@ it("stops a pasted-key install when setup ownership is invalidated before commit
       // Ownership stays valid through staging and verification, then lapses
       // while the probe turn is in flight — the worst case the commit gate covers.
       let ownershipInvalidated = false;
-      const runEmbeddedAgent = vi.fn<NonNullable<ActivateSetupInferenceDeps["runEmbeddedAgent"]>>(
-        async (params) => {
-          params.onSuccessfulAuthBinding?.({
-            authProfileId: params.authProfileId,
-            authFingerprint,
-            agentHarnessId: "openclaw",
-            modelId: "fixture-model",
-            modelApi: "openai-completions",
-          });
-          ownershipInvalidated = true;
-          return {
-            meta: {
-              durationMs: 1,
-              finalAssistantVisibleText: "OK",
-              executionTrace: {
-                winnerProvider: "fixture-provider",
-                winnerModel: "fixture-model",
-              },
+      const runEmbeddedAgent = vi.fn<typeof embeddedAgent.runEmbeddedAgent>(async (params) => {
+        params.onSuccessfulAuthBinding?.({
+          authProfileId: params.authProfileId,
+          authFingerprint,
+          agentHarnessId: "openclaw",
+          modelId: "fixture-model",
+          modelApi: "openai-completions",
+        });
+        ownershipInvalidated = true;
+        return {
+          meta: {
+            durationMs: 1,
+            finalAssistantVisibleText: "OK",
+            executionTrace: {
+              winnerProvider: "fixture-provider",
+              winnerModel: "fixture-model",
             },
-          };
-        },
-      );
+          },
+        };
+      });
       await withPluginRuntimeGenerationScope(
         {
           metadataSnapshot: runningMetadata,
           pluginRegistry: runningRegistry,
         },
         async () => {
+          vi.spyOn(embeddedAgent, "runEmbeddedAgent").mockImplementation(runEmbeddedAgent);
+          vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue(undefined);
           // Ownership is revalidated inside the commit transform, after the
           // verification turn and before the artifact/credential commit.
           await expect(
@@ -490,21 +508,19 @@ it("stops a pasted-key install when setup ownership is invalidated before commit
                   throw new Error("Setup session superseded by a newer owner.");
                 }
               },
-              deps: {
-                resolveManifestProviderAuthChoice: () => undefined,
-                runEmbeddedAgent,
-              },
             }),
           ).rejects.toThrow("superseded");
           expect(runEmbeddedAgent).toHaveBeenCalledOnce();
           expect(await fs.readFile(state.configPath, "utf8")).toBe(originalBytes);
           const records = await withPluginLifecycleLease({}, async () =>
-            readPersistedInstalledPluginIndexInstallRecords({ stateDir: state.stateDir }),
+            readPersistedInstalledPluginIndexInstallRecordsAsync({ stateDir: state.stateDir }),
           );
           expect(records?.["fixture-provider"]).toBeUndefined();
           const committed = await readConfigFileSnapshot();
-          const profiles = loadAuthProfileStoreWithoutExternalProfiles(
-            resolveAgentDir(committed.config, "main"),
+          const profiles = (
+            await loadAuthProfileStoreWithoutExternalProfilesAsync(
+              resolveAgentDir(committed.config, "main"),
+            )
           ).profiles;
           expect(
             Object.values(profiles).some(
@@ -530,7 +546,9 @@ it.each([
   await withOpenClawTestState({ label: "manual-install-rejected" }, async (state) => {
     await state.writeConfig({ gateway: { mode: "local" }, plugins: { slots: { memory: "none" } } });
     const before = await fs.readFile(state.configPath, "utf8");
-    const runEmbeddedAgent = vi.fn();
+    const runEmbeddedAgent = vi.fn<typeof embeddedAgent.runEmbeddedAgent>();
+    vi.spyOn(embeddedAgent, "runEmbeddedAgent").mockImplementation(runEmbeddedAgent);
+    vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue(undefined);
     const result = await activateSetupInference({
       kind: "api-key",
       authChoice: manualEntry.choiceId,
@@ -540,7 +558,6 @@ it.each([
       recordSetupAudit: false,
       runtime: createNonExitingRuntime(),
       ...(testCase.prompt ? { prompter: createWizardPrompter() } : {}),
-      deps: { resolveManifestProviderAuthChoice: () => undefined, runEmbeddedAgent },
     });
     expect(result.ok).toBe(false);
     expect(prepareProvider).not.toHaveBeenCalled();
