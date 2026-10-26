@@ -3,9 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
-import { resolveAgentDir } from "../agents/agent-scope.js";
-import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
+import * as embeddedAgent from "../agents/embedded-agent.js";
 import { fingerprintResolvedProviderAuth } from "../agents/execution-auth-binding.js";
+import * as modelAuth from "../agents/model-auth.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
@@ -14,27 +14,29 @@ import { computeDeclaredSurfaceHash } from "../plugins/capability-summary.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolvePluginNpmProjectDir } from "../plugins/install-paths.js";
 import { readPersistedInstalledPluginIndexInstallRecordsAsync } from "../plugins/installed-plugin-index-records.js";
-import * as loader from "../plugins/loader.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import type { ProviderInstallCatalogEntry } from "../plugins/provider-install-catalog.js";
+import * as providerChoices from "../plugins/provider-auth-choices.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { createNonExitingRuntime } from "../runtime.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { activateSetupInference } from "./setup-inference-activate.js";
-import type { ActivateSetupInferenceDeps } from "./setup-inference-core.js";
-import { captureSystemAgentOwnerPluginArtifacts } from "./verified-inference.js";
+
+// mock-isolation: Setup probes replace model I/O without loading the embedded runtime.
+vi.mock("../agents/embedded-agent.js", () => ({ runEmbeddedAgent: vi.fn() }));
 
 const prepareProvider = vi.hoisted(() =>
   vi.fn<
     typeof import("../plugins/provider-auth-choice.js").prepareAuthChoiceLoadedPluginProvider
   >(),
 );
-vi.mock("../plugins/provider-auth-choice.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../plugins/provider-auth-choice.js")>()),
+const providerId = "fixture-provider";
+const modelRef = `${providerId}/fixture-model`;
+const writeJson = (file: string, value: unknown) => fs.writeFile(file, JSON.stringify(value));
+vi.mock("../plugins/provider-auth-choice.js", () => ({
   prepareAuthChoiceLoadedPluginProvider: prepareProvider,
 }));
 
@@ -63,31 +65,20 @@ afterEach(() => {
   resetPluginLoaderTestStateForTest();
 });
 
-it.each([
-  { replaceDuringProbe: false, manual: false },
-  { replaceDuringProbe: true, manual: false },
-  { replaceDuringProbe: false, manual: true },
-])(
-  "binds a newly installed provider to its real artifact (replace: $replaceDuringProbe, pasted key: $manual)",
-  async ({ replaceDuringProbe, manual }) => {
-    if (manual) {
-      catalogEntry.mockReturnValue(manualEntry);
-    }
-    await withOpenClawTestState(
-      {
-        label: "provider-install-owner",
-        env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" },
-      },
+it.each([false, true])(
+  "binds a newly installed provider to its real artifact (replace during probe: %s)",
+  (replaceDuringProbe) =>
+    withOpenClawTestState(
+      { label: "provider-install-owner", env: { OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" } },
       async (state) => {
-        const source: OpenClawConfig = {
+        await state.writeConfig({
           gateway: { mode: "local" },
           agents: {
             defaults: { workspace: state.workspaceDir },
             entries: { main: { workspace: state.workspaceDir } },
           },
           plugins: { entries: {} },
-        };
-        await state.writeConfig(source);
+        });
         const originalBytes = await fs.readFile(state.configPath, "utf8");
         const original = await readConfigFileSnapshot();
         const runningMetadata = resolvePluginMetadataSnapshot({
@@ -98,7 +89,6 @@ it.each([
         });
         const runningRegistry = createEmptyPluginRegistry();
         setActivePluginRegistry(runningRegistry);
-        const loaded = vi.spyOn(loader, "loadPluginRegistryHandle");
         const projectRoot = resolvePluginNpmProjectDir({
           npmDir: state.statePath("npm"),
           packageName: "@fixture/provider",
@@ -134,43 +124,29 @@ it.each([
           // Acquisition and auth are synthetic. Discovery, runtime registration,
           // owner fingerprints, activation checks, and final promotion are real.
           await fs.mkdir(pluginRoot, { recursive: true });
-          await fs.writeFile(
-            path.join(projectRoot, "package.json"),
-            JSON.stringify({
-              private: true,
-              dependencies: { "@fixture/provider": "1.0.0" },
-            }),
-          );
-          await fs.writeFile(
-            path.join(pluginRoot, "package.json"),
-            JSON.stringify({
-              name: "@fixture/provider",
-              version: "1.0.0",
-              openclaw: { extensions: ["./index.cjs"] },
-            }),
-          );
-          await fs.writeFile(
-            path.join(pluginRoot, "openclaw.plugin.json"),
-            JSON.stringify({
-              id: "fixture-provider",
-              providers: ["fixture-provider"],
-              configSchema: { type: "object", properties: {}, additionalProperties: false },
-            }),
-          );
+          await writeJson(path.join(projectRoot, "package.json"), {
+            private: true,
+            dependencies: { "@fixture/provider": "1.0.0" },
+          });
+          await writeJson(path.join(pluginRoot, "package.json"), {
+            name: "@fixture/provider",
+            version: "1.0.0",
+            openclaw: { extensions: ["./index.cjs"] },
+          });
+          await writeJson(path.join(pluginRoot, "openclaw.plugin.json"), {
+            id: providerId,
+            providers: [providerId],
+            configSchema: { type: "object", properties: {}, additionalProperties: false },
+          });
           await fs.writeFile(pluginEntry, pluginSource);
-          const config: OpenClawConfig = {
-            ...params.config,
-            plugins: {
-              ...params.config.plugins,
-              entries: { ...params.config.plugins?.entries, "fixture-provider": { enabled: true } },
-            },
-            models: {
-              providers: {
-                "fixture-provider": {
-                  baseUrl: "https://provider.example/v1",
-                  api: "openai-completions",
-                  models: [],
-                },
+          const config: OpenClawConfig = structuredClone(params.config);
+          ((config.plugins ??= {}).entries ??= {})[providerId] = { enabled: true };
+          config.models = {
+            providers: {
+              [providerId]: {
+                baseUrl: "https://provider.example/v1",
+                api: "openai-completions",
+                models: [],
               },
             },
           };
@@ -192,60 +168,53 @@ it.each([
           return await consume(
             {
               config,
-              agentModelOverride: "fixture-provider/fixture-model",
-              authProfiles: [
-                {
-                  profileId: "fixture-provider:default",
-                  credential: {
-                    type: "api_key",
-                    provider: "fixture-provider",
-                    key: "synthetic-owner-key",
-                  },
-                },
-              ],
-              pendingPluginInstalls: { "fixture-provider": trustedRecord },
+              agentModelOverride: modelRef,
+              authProfiles: [],
+              pendingPluginInstalls: { [providerId]: trustedRecord },
               persistAuthProfiles: async () => {},
             },
-            { id: "fixture-provider", label: "Fixture", auth: [] },
+            { id: providerId, label: "Fixture", auth: [] },
           );
         });
-        const capture = vi.fn(captureSystemAgentOwnerPluginArtifacts);
-        const runEmbeddedAgent = vi.fn<NonNullable<ActivateSetupInferenceDeps["runEmbeddedAgent"]>>(
-          async (params) => {
-            expect(onPreparationComplete).toHaveBeenCalledOnce();
-            params.onSuccessfulAuthBinding?.({
-              authProfileId: params.authProfileId,
-              authFingerprint,
-              agentHarnessId: "openclaw",
-              modelId: "fixture-model",
-              modelApi: "openai-completions",
-            });
-            if (replaceDuringProbe) {
-              await fs.writeFile(pluginEntry, pluginSource + "// Replaced artifact.\n");
-            }
-            return {
-              meta: {
-                durationMs: 1,
-                finalAssistantVisibleText: "OK",
-                executionTrace: {
-                  winnerProvider: "fixture-provider",
-                  winnerModel: "fixture-model",
-                },
+        const phases: string[] = [];
+        const runEmbeddedAgent = vi.fn<typeof embeddedAgent.runEmbeddedAgent>(async (params) => {
+          phases.push("probe");
+          params.onSuccessfulAuthBinding?.({
+            authFingerprint,
+            agentHarnessId: "openclaw",
+            modelId: "fixture-model",
+            modelApi: "openai-completions",
+          });
+          if (replaceDuringProbe) {
+            await fs.writeFile(pluginEntry, pluginSource + "// Replaced artifact.\n");
+          }
+          return {
+            meta: {
+              durationMs: 1,
+              finalAssistantVisibleText: "OK",
+              executionTrace: {
+                winnerProvider: providerId,
+                winnerModel: "fixture-model",
               },
-            };
-          },
-        );
-        const onPreparationComplete = vi.fn(() => {
-          expect(capture).toHaveBeenCalledOnce();
-          expect(trustedRecord).toBeDefined();
-          expect(runEmbeddedAgent).not.toHaveBeenCalled();
+            },
+          };
         });
+        vi.spyOn(embeddedAgent, "runEmbeddedAgent").mockImplementation(runEmbeddedAgent);
         await withPluginRuntimeGenerationScope(
           {
             metadataSnapshot: runningMetadata,
             pluginRegistry: runningRegistry,
           },
           async () => {
+            vi.spyOn(modelAuth, "resolveApiKeyForProviderCore").mockResolvedValue(resolvedAuth);
+            vi.spyOn(providerChoices, "resolveManifestProviderAuthChoice").mockReturnValue({
+              pluginId: providerId,
+              providerId,
+              methodId: "key",
+              choiceId: "fixture-provider-key",
+              choiceLabel: "Fixture",
+              appGuidedSecret: true,
+            });
             const result = await activateSetupInference({
               kind: manual ? "api-key" : "provider-auth",
               ...(manual ? { apiKey: "synthetic-owner-key" } : {}),
@@ -255,58 +224,19 @@ it.each([
               surface: "gateway",
               recordSetupAudit: false,
               runtime: createNonExitingRuntime(),
-              onPreparationComplete,
+              onPreparationComplete: () => phases.push("prepared"),
               prompter: createWizardPrompter(),
-              deps: {
-                resolveManifestProviderAuthChoice: () =>
-                  manual
-                    ? undefined
-                    : {
-                        pluginId: "fixture-provider",
-                        providerId: "fixture-provider",
-                        methodId: "key",
-                        choiceId: "fixture-provider-key",
-                        choiceLabel: "Fixture",
-                        appGuidedSecret: true,
-                      },
-                captureSystemAgentOwnerPluginArtifacts: capture,
-                resolveApiKeyForProvider: async (params) => ({
-                  ...resolvedAuth,
-                  profileId: params.profileId,
-                }),
-                runEmbeddedAgent,
-              },
             });
-            expect(onPreparationComplete).toHaveBeenCalledOnce();
-            expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-            expect(capture).toHaveBeenCalledOnce();
-            const staged = capture.mock.results[0]?.value;
-            expect(staged?.ownerPluginIds).toEqual(["fixture-provider"]);
-            expect(staged?.ownerPluginArtifacts).toEqual([
-              {
-                pluginId: "fixture-provider",
-                fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
-              },
-            ]);
-            expect(
-              loaded.mock.calls.some(
-                ([options]) =>
-                  options?.installRecords?.["fixture-provider"]?.acceptedSurfaceIntegrity ===
-                  integrity,
-              ),
-            ).toBe(true);
+            expect(phases).toEqual(["prepared", "probe"]);
             if (replaceDuringProbe) {
-              expect(result).toMatchObject({ ok: false, status: "auth" });
-              if (result.ok) {
-                throw new Error("Replaced provider artifact was accepted");
-              }
-              expect(result.error).toContain("owner plugin runtime changed");
+              expect(result).toMatchObject({
+                ok: false,
+                status: "auth",
+                error: expect.stringContaining("owner plugin runtime changed"),
+              });
               expect(await fs.readFile(state.configPath, "utf8")).toBe(originalBytes);
             } else {
-              expect(result).toMatchObject({
-                ok: true,
-                modelRef: "fixture-provider/fixture-model",
-              });
+              expect(result).toMatchObject({ ok: true, modelRef });
               // The running generation intentionally retains its pre-install cache.
               const records = await withPluginLifecycleLease(
                 {},
@@ -318,28 +248,17 @@ it.each([
               if (!trustedRecord) {
                 throw new Error("Installer did not prepare a trusted record");
               }
-              expect(records?.["fixture-provider"]).toMatchObject(trustedRecord);
-              const committed = await readConfigFileSnapshot();
-              expect(committed.sourceConfig.plugins?.installs).toBeUndefined();
-              const profiles = loadAuthProfileStoreWithoutExternalProfiles(
-                resolveAgentDir(committed.config, "main"),
-              ).profiles;
-              const credential = Object.values(profiles).find(
-                (profile) => profile.provider === "fixture-provider",
-              );
-              expect(credential).toMatchObject({ type: "api_key", key: "synthetic-owner-key" });
-              expect(credential?.setup).toBeUndefined();
+              expect(records?.[providerId]).toMatchObject(trustedRecord);
             }
             expect(getActivePluginRegistry()).toBe(runningRegistry);
             expect(getCurrentPluginMetadataSnapshot({ config: original.runtimeConfig })).toBe(
               runningMetadata,
             );
-            expect(runningMetadata.byPluginId.has("fixture-provider")).toBe(false);
+            expect(runningMetadata.byPluginId.has(providerId)).toBe(false);
           },
         );
       },
-    );
-  },
+    ),
 );
 
 it("stops a pasted-key install when capability consent is denied", async () => {

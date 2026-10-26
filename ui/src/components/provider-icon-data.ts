@@ -2,6 +2,7 @@ import { takeGraphemes } from "../lib/graphemes.ts";
 
 const PROVIDER_ICON_NAMES = new Set([
   "abacus",
+  "abliteration",
   "alibaba",
   "amp",
   "antigravity",
@@ -66,6 +67,7 @@ const PROVIDER_ICON_NAMES = new Set([
   "poe",
   "qianfan",
   "qoder",
+  "requesty",
   "runway",
   "sakana",
   "stepfun",
@@ -130,7 +132,7 @@ const PROVIDER_DISPLAY_LABELS: Readonly<Record<string, string>> = {
   "claude-cli": "Claude CLI",
   coreweave: "CoreWeave",
   google: "Google",
-  "github-copilot": "GitHub",
+  "github-copilot": "GitHub Copilot",
   "llama-cpp": "llama.cpp",
   lmstudio: "LM Studio",
   longcat: "LongCat",
